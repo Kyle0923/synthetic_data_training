@@ -13,13 +13,16 @@ import os
 from tqdm import tqdm  # Import tqdm for the progress bar
 import json
 
-LAMBDA = 1 # Gradient penalty lambda hyperparameter
+LAMBDA = 10 # Gradient penalty lambda hyperparameter
+
+LATENT_FEATURES = 64
+BATCH_SIZE = 32
 
 # Generator
 class Generator(nn.Module):
     def __init__(self, noise_dim, channels=3):
         super(Generator, self).__init__()
-        self.ngf = 64
+        self.ngf = LATENT_FEATURES
         self.model = nn.Sequential(
             # input is Z, going into a convolution
             nn.ConvTranspose2d(noise_dim, self.ngf * 8, kernel_size=3, stride=1, padding=0, bias=False),
@@ -46,12 +49,11 @@ class Generator(nn.Module):
     def forward(self, input):
         return self.model(input)
 
-
 # Discriminator (Critic)
 class Discriminator(nn.Module):
     def __init__(self, channels=3):
         super(Discriminator, self).__init__()
-        self.ndf = 64
+        self.ndf = LATENT_FEATURES
         self.model = nn.Sequential(
             # input is ``(channels) x 768 x 768``
             nn.Conv2d(in_channels=channels, out_channels=self.ndf, kernel_size=8, stride=3, padding=3, bias=False),
@@ -81,6 +83,15 @@ class Discriminator(nn.Module):
     def forward(self, x):
         return self.model(x)
 
+# custom weights initialization called on ``generator`` and ``discriminator``
+def weights_init(m):
+    classname = m.__class__.__name__
+    if classname.find('Conv') != -1:
+        nn.init.normal_(m.weight.data, 0.0, 0.02)
+    elif classname.find('BatchNorm') != -1:
+        nn.init.normal_(m.weight.data, 1.0, 0.02)
+        nn.init.constant_(m.bias.data, 0)
+
 # Gradient Penalty
 # adopted from https://github.com/caogang/wgan-gp/blob/master/gan_mnist.py#L129
 # credit: Marvin Cao
@@ -100,7 +111,10 @@ def gradient_penalty(discriminator, real_data, fake_data, device):
                               grad_outputs=torch.ones(disc_interpolates.size(), device=device),
                               create_graph=True, retain_graph=True, only_inputs=True)[0]
 
-    gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
+    # flatten the gradients to it calculates norm batchwise
+    gradients = gradients.view(gradients.size(0), -1)
+
+    gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean() * LAMBDA
     return gradient_penalty
 
 
@@ -124,10 +138,20 @@ def train_gan(generator, discriminator, dataloader, device, noise_dim, save_path
     G_losses = []
     D_losses = []
     lr = 1e-4
-    optimizer_G = optim.Adam(generator.parameters(), lr=lr, betas=(0.5, 0.9))
-    optimizer_D = optim.Adam(discriminator.parameters(), lr=lr, betas=(0.5, 0.9))
 
-    for epoch in range(epochs):
+    # criterion = nn.BCELoss()
+
+    # # Create batch of latent vectors that we will use to visualize
+    # #  the progression of the generator
+    # fixed_noise = torch.randn(4, noise_dim, 1, 1, device=device)
+
+    # real_label = 1.
+    # fake_label = 0.
+
+    optimizer_G = optim.Adam(generator.parameters(), lr=lr, betas=(0.5, 0.999))
+    optimizer_D = optim.Adam(discriminator.parameters(), lr=lr, betas=(0.5, 0.999))
+
+    for epoch in range(1, epochs+1):
         # Create a progress bar using tqdm
         progress_bar = tqdm(dataloader, desc=f"Epoch [{epoch}/{epochs}]")
 
@@ -136,19 +160,27 @@ def train_gan(generator, discriminator, dataloader, device, noise_dim, save_path
             batch_size = real_data.size(0)
 
             # Train Discriminator
-            optimizer_D.zero_grad()
+            discriminator.zero_grad()
             z = torch.randn(batch_size, noise_dim, 1, 1, device=device)
             fake_data = generator(z).detach()
 
+            # Goal:
+            # discriminator(real_data) => 1
+            # discriminator(fake_data) => 0
+
             loss_D = -torch.mean(discriminator(real_data)) + torch.mean(discriminator(fake_data))
-            gp = gradient_penalty(discriminator, real_data, fake_data, device)
-            loss_D += LAMBDA * gp
+            # gp = gradient_penalty(discriminator, real_data, fake_data, device)
+            # loss_D += gp
             loss_D.backward()
             optimizer_D.step()
 
+        # Clip weights of discriminator
+            for p in discriminator.parameters():
+                p.data.clamp_(-0.01, 0.01)
+
             # Train Generator every 5 steps
             if i % 5 == 0:
-                optimizer_G.zero_grad()
+                generator.zero_grad()
                 z = torch.randn(batch_size, noise_dim, 1, 1, device=device)
                 fake_data = generator(z)
 
@@ -160,11 +192,12 @@ def train_gan(generator, discriminator, dataloader, device, noise_dim, save_path
             D_losses.append(loss_D.item())
 
             # Update progress bar description with loss values
-            progress_bar.set_postfix(D_loss=loss_D.item(), G_loss=loss_G.item(), gp=gp.item())
+            # progress_bar.set_postfix(D_loss=loss_D.item(), G_loss=loss_G.item(), gp=gp.item())
+            progress_bar.set_postfix(D_loss=loss_D.item(), G_loss=loss_G.item())
 
         # Optionally, save intermediate models and generate images during training
         if epoch % 100 == 0:
-            ep_save_path = f"{save_path}_ep{epoch}"
+            ep_save_path = f"{save_path}_ep{epoch}.pth"
             print(f"Epoch [{epoch}/{epochs}] Loss D: {loss_D.item():.4f}, Loss G: {loss_G.item():.4f}")
             torch.save(generator.state_dict(), ep_save_path)
             print(f"Generator is saved as '{ep_save_path}'.")
@@ -179,7 +212,10 @@ def train_group_gan(group, dataloader, noise_dim, image_size, epochs, device):
     generator = Generator(noise_dim, channels=3).to(device)
     discriminator = Discriminator(channels=3).to(device)
 
-    generator_path = f"generator_{group}_{len(dataloader.dataset)}.pth"
+    generator.apply(weights_init)
+    discriminator.apply(weights_init)
+
+    generator_path = f"generator_{group}_{len(dataloader.dataset)}"
     losses = train_gan(generator, discriminator, dataloader, device, noise_dim, generator_path, epochs)
 
     with open(f'training_record_{group}_{len(dataloader.dataset)}.json', 'w') as file:
@@ -208,13 +244,14 @@ def main():
     train_data_dir = './lung_colon_image_set/colon_image_sets/train'
     noise_dim = 100
     image_size = 768
-    batch_size = 32
-    epochs = 500
+    batch_size = BATCH_SIZE
+    epochs = 1000
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     # Train GANs for each group
-    for group in ['colon_aca', 'colon_n']:
+    # for group in ['colon_aca', 'colon_n']:
+    for group in ['colon_aca']:
         dataloader = get_dataloader(train_data_dir, group, image_size, batch_size)
         train_group_gan(group, dataloader, noise_dim, image_size, epochs, device)
 
@@ -227,4 +264,5 @@ if __name__ == "__main__":
     # summary(model, input_size=(1, 100, 1, 1))
     # model = Discriminator(3)
     # summary(model, input_size=(1, 3, 768, 768))
+    # exit()
     main()

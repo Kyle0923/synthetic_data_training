@@ -12,11 +12,21 @@ import matplotlib.pyplot as plt
 import os
 from tqdm import tqdm  # Import tqdm for the progress bar
 import json
+import time
+import sys
+from datetime import timedelta
 
-LAMBDA = 10 # Gradient penalty lambda hyperparameter
+# for signal handling
+import os
+import signal
 
-LATENT_FEATURES = 128
-BATCH_SIZE = 64*3
+test_training = False
+graceful_exit = False
+
+LAMBDA = 2 # Gradient penalty lambda hyperparameter
+
+LATENT_FEATURES = 64
+BATCH_SIZE = 36
 
 # Generator
 class Generator(nn.Module):
@@ -37,13 +47,13 @@ class Generator(nn.Module):
             nn.BatchNorm2d(self.ngf * 2),
             nn.ReLU(True),
             # state size. ``(self.ngf*2) x 48 x 48``
-            nn.ConvTranspose2d( self.ngf * 2, self.ngf, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.ConvTranspose2d( self.ngf * 2, self.ngf, kernel_size=8, stride=4, padding=2, bias=False),
             nn.BatchNorm2d(self.ngf),
             nn.ReLU(True),
-            # state size. ``(self.ngf) x 96 x 96``
-            nn.ConvTranspose2d( self.ngf, channels, kernel_size=4, stride=2, padding=1, bias=False),
+            # state size. ``(self.ngf) x 192 x 192``
+            nn.ConvTranspose2d( self.ngf, channels, kernel_size=8, stride=4, padding=2, bias=False),
             nn.Tanh()
-            # state size. ``(channels) x 192 x 192``
+            # state size. ``(channels) x 768 x 768``
         )
 
     def forward(self, input):
@@ -55,17 +65,17 @@ class Discriminator(nn.Module):
         super(Discriminator, self).__init__()
         self.ndf = LATENT_FEATURES
         self.model = nn.Sequential(
-            # input is ``(channels) x 192 x 192``
+            # input is ``(channels) x 768 x 768``
             nn.Conv2d(in_channels=channels, out_channels=self.ndf, kernel_size=8, stride=3, padding=3, bias=False),
             nn.LeakyReLU(negative_slope=0.2, inplace=True),
-            # state size. ``(self.ndf) x 64 x 64``
+            # state size. ``(self.ndf) x 256 x 256``
 
-            nn.Conv2d(in_channels=self.ndf, out_channels=self.ndf * 2, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.Conv2d(in_channels=self.ndf, out_channels=self.ndf * 2, kernel_size=8, stride=4, padding=2, bias=False),
             nn.BatchNorm2d(self.ndf * 2),
             nn.LeakyReLU(negative_slope=0.2, inplace=True),
-            # state size. ``(self.ndf*2) x 32 x 32``
+            # state size. ``(self.ndf*2) x 64 x 64``
 
-            nn.Conv2d(in_channels=self.ndf * 2, out_channels=self.ndf * 4, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.Conv2d(in_channels=self.ndf * 2, out_channels=self.ndf * 4, kernel_size=8, stride=4, padding=2, bias=False),
             nn.BatchNorm2d(self.ndf * 4),
             nn.LeakyReLU(negative_slope=0.2, inplace=True),
             # state size. ``(self.ndf*4) x 16 x 16``
@@ -114,7 +124,7 @@ def gradient_penalty(discriminator, real_data, fake_data, device):
     # flatten the gradients to it calculates norm batchwise
     gradients = gradients.view(gradients.size(0), -1)
 
-    gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean() * LAMBDA
+    gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
     return gradient_penalty
 
 
@@ -134,10 +144,11 @@ def get_dataloader(data_dir, group, image_size, batch_size):
     return DataLoader(subset, batch_size=batch_size, shuffle=True)
 
 # Training GAN with progress bar
-def train_gan(generator, discriminator, dataloader, device, noise_dim, save_path, epochs=2000):
+def train_gan(generator, discriminator, dataloader, device, noise_dim, save_name, epochs=2000):
+    global test_training, graceful_exit
     G_losses = []
     D_losses = []
-    lr = .1
+    lr = 1e-4
 
     # criterion = nn.BCELoss()
 
@@ -151,18 +162,44 @@ def train_gan(generator, discriminator, dataloader, device, noise_dim, save_path
     optimizer_G = optim.Adam(generator.parameters(), lr=lr, betas=(0.5, 0.999))
     optimizer_D = optim.Adam(discriminator.parameters(), lr=lr, betas=(0.5, 0.999))
 
-    scheduler_G = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer_G, mode='min', factor=0.5, patience=5, min_lr=1e-4
-    )
-    scheduler_D = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer_D, mode='min', factor=0.5, patience=5, min_lr=1e-4
-    )
+    # scheduler_G = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    #     optimizer_G, mode='min', factor=0.5, patience=5, min_lr=1e-4
+    # )
+    # scheduler_D = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    #     optimizer_D, mode='min', factor=0.5, patience=5, min_lr=1e-4
+    # )
 
+    start_time = time.time()
     for epoch in range(1, epochs+1):
+        def save_model():
+            ep_save_path = f"{save_name}_ep{epoch}.pth"
+            print(f"Epoch [{epoch}/{epochs}] Loss D: {D_losses[-1]:.4f}, Loss G: {G_losses[-1]:.4f}")
+            torch.save(generator.state_dict(), f"generator_{ep_save_path}")
+            print(f"Generator is saved as 'generator_{ep_save_path}'.")
+            torch.save(discriminator.state_dict(), f"discriminator_{ep_save_path}")
+            print(f"Discriminator is saved as 'discriminator_{ep_save_path}'.")
+
+        def finish_training():
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            duration = str(timedelta(seconds=elapsed_time))
+            start_date = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))
+            with open(f'training_record_{save_name}.json', 'w') as file:
+                json.dump({"date": start_date, "duration": duration, "epoch": epoch,"hyperparam": {"lambda": LAMBDA, "LATENT_FEATURES": LATENT_FEATURES}, "losses": {"G_losses":G_losses, "D_losses": D_losses}}, file)
+
         # Create a progress bar using tqdm
         progress_bar = tqdm(dataloader, desc=f"Epoch [{epoch}/{epochs}]")
 
+        if test_training:
+            img_gen(generator, noise_dim, device, num_images=3, save_path=f"img_gen_{save_name}_ep{epoch}.png")
+            test_training = False
+
         for i, (real_data, _) in enumerate(progress_bar):
+            if graceful_exit:
+                save_model()
+                finish_training()
+                sys.exit(0)
+
             real_data = real_data.to(device)
             batch_size = real_data.size(0)
 
@@ -176,11 +213,11 @@ def train_gan(generator, discriminator, dataloader, device, noise_dim, save_path
             # discriminator(fake_data) => 0
 
             loss_D = -torch.mean(discriminator(real_data)) + torch.mean(discriminator(fake_data))
-            # gp = gradient_penalty(discriminator, real_data, fake_data, device)
-            # loss_D += gp
+            gp = gradient_penalty(discriminator, real_data, fake_data, device)
+            loss_D += LAMBDA * gp
             loss_D.backward()
             optimizer_D.step()
-            scheduler_D.step(loss_D)
+            # scheduler_D.step(loss_D)
 
             # # Clip weights of discriminator
             # for p in discriminator.parameters():
@@ -195,30 +232,26 @@ def train_gan(generator, discriminator, dataloader, device, noise_dim, save_path
                 loss_G = -torch.mean(discriminator(fake_data))
                 loss_G.backward()
                 optimizer_G.step()
-                scheduler_G.step(loss_G)
+                # scheduler_G.step(loss_G)
 
             G_losses.append(loss_G.item())
             D_losses.append(loss_D.item())
 
             # Update progress bar description with loss values
-            # progress_bar.set_postfix(D_loss=loss_D.item(), G_loss=loss_G.item(), gp=gp.item())
-            progress_bar.set_postfix(D_loss=loss_D.item(), G_loss=loss_G.item())
+            progress_bar.set_postfix(D_loss=loss_D.item(), G_loss=loss_G.item(), gp=gp.item())
+            # progress_bar.set_postfix(D_loss=loss_D.item(), G_loss=loss_G.item())
 
-        # Optionally, save intermediate models and generate images during training
         if epoch % 100 == 0:
-            ep_save_path = f"{save_path}_ep{epoch}.pth"
-            print(f"Epoch [{epoch}/{epochs}] Loss D: {loss_D.item():.4f}, Loss G: {loss_G.item():.4f}")
-            torch.save(generator.state_dict(), f"generator_{ep_save_path}")
-            print(f"Generator is saved as 'generator_{ep_save_path}'.")
-            torch.save(discriminator.state_dict(), f"discriminator_{ep_save_path}")
-            print(f"Discriminator is saved as 'discriminator_{ep_save_path}'.")
+            save_model()
 
-    return {"G_losses":G_losses, "D_losses": D_losses}
+    finish_training()
+
+    return
 
 
 # Train GAN for a group
 def train_group_gan(group, dataloader, noise_dim, image_size, epochs, device):
-    print(f"Training GAN for group: {group}")
+    print(f"Training GAN for group: {group}, lambda:{LAMBDA}")
 
     generator = Generator(noise_dim, channels=3).to(device)
     discriminator = Discriminator(channels=3).to(device)
@@ -227,18 +260,19 @@ def train_group_gan(group, dataloader, noise_dim, image_size, epochs, device):
     discriminator.apply(weights_init)
 
     save_path = f"{group}_{len(dataloader.dataset)}"
-    losses = train_gan(generator, discriminator, dataloader, device, noise_dim, save_path, epochs)
+    train_gan(generator, discriminator, dataloader, device, noise_dim, save_path, epochs)
 
-    with open(f'training_record_{group}_{len(dataloader.dataset)}.json', 'w') as file:
-        json.dump(losses, file)
 
 # Generate images
 def img_gen(generator_path, noise_dim, device, num_images=1, save_path="generated_image.png"):
-    generator = Generator(noise_dim).to(device)
-    generator.load_state_dict(torch.load(generator_path))
-    generator.eval()
+    if isinstance(generator_path, str):
+        generator = Generator(noise_dim).to(device)
+        generator.load_state_dict(torch.load(generator_path))
+        generator.eval()
+    else:
+        generator = generator_path
 
-    z = torch.randn(num_images, noise_dim, 1, 1, device=device)
+    z = torch.randn(num_images**2, noise_dim, 1, 1, device=device)
     with torch.no_grad():
         fake_images = generator(z)
 
@@ -246,34 +280,57 @@ def img_gen(generator_path, noise_dim, device, num_images=1, save_path="generate
     vutils.save_image(fake_images, save_path, nrow=num_images)
     print(f"Generated images saved to {save_path}.")
 
-    plt.imshow(fake_images[0].permute(1, 2, 0).cpu().numpy())
-    plt.axis("off")
-    plt.show()
+    # plt.imshow(fake_images[0].permute(1, 2, 0).cpu().numpy())
+    # plt.axis("off")
+    # plt.show()
+
+
+def signal_handler_test_onfly(sig, frame):
+    global test_training
+    print(f"Signal {sig} received. Preparing to test on-the-fly ...")
+    test_training = True
+
+exit_count = 0
+def signal_handler_on_exit(sig, frame):
+    global graceful_exit, exit_count
+    exit_count += 1
+    if exit_count > 3:
+        sys.exit(0)
+    print(f"Signal {sig} received. Preparing graceful exit ...")
+    graceful_exit = True
 
 # Main
 def main():
+    PID = os.getpid()
+    # use sigbus to trigger training on-the-fly
+    signal.signal(signal.SIGBUS, signal_handler_test_onfly)
+    signal.signal(signal.SIGINT, signal_handler_on_exit)
+    signal.signal(signal.SIGTERM, signal_handler_on_exit)
+    print(f"PID: {PID}, use ``kill -s SIGBUS {PID}`` to trigger test")
+
     train_data_dir = './lung_colon_image_set/colon_image_sets/train'
     noise_dim = 100
-    image_size = 192
+    image_size = 768
     batch_size = BATCH_SIZE
-    epochs = 20000
+    epochs = 5000
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     # Train GANs for each group
     # for group in ['colon_aca', 'colon_n']:
-    for group in ['colon_aca']:
+    for group in ['colon_n']:
         dataloader = get_dataloader(train_data_dir, group, image_size, batch_size)
         train_group_gan(group, dataloader, noise_dim, image_size, epochs, device)
 
     # Generate images for each group
     # for group in ['colon_aca', 'colon_n']:
-    #     img_gen(f"generator_{group}.pth", noise_dim, device, num_images=5, save_path=f"generated_{group}.png")
+    #     ep=800
+    #     img_gen(f"generator_{group}_4000_ep{ep}.pth", noise_dim, device, num_images=3, save_path=f"img_gen_{group}_{ep}.png")
 
 if __name__ == "__main__":
     # model = Generator(100)
     # summary(model, input_size=(1, 100, 1, 1))
     # model = Discriminator(3)
-    # summary(model, input_size=(1, 3, 192, 192))
+    # summary(model, input_size=(1, 3, 768, 768))
     # exit()
     main()

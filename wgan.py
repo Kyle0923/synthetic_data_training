@@ -167,7 +167,7 @@ def train_gan(generator, discriminator, dataloader, device, noise_dim, save_path
             batch_size = real_data.size(0)
 
             # Train Discriminator
-            discriminator.zero_grad()
+            optimizer_D.zero_grad()
             z = torch.randn(batch_size, noise_dim, 1, 1, device=device)
             fake_data = generator(z).detach()
 
@@ -188,7 +188,7 @@ def train_gan(generator, discriminator, dataloader, device, noise_dim, save_path
 
             # Train Generator every 5 steps
             if i % 5 == 0:
-                generator.zero_grad()
+                optimizer_G.zero_grad()
                 z = torch.randn(batch_size, noise_dim, 1, 1, device=device)
                 fake_data = generator(z)
 

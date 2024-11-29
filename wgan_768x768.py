@@ -23,10 +23,10 @@ import signal
 test_training = False
 graceful_exit = False
 
-LAMBDA = 10 # Gradient penalty lambda hyperparameter
+LAMBDA = 0 # Gradient penalty lambda hyperparameter
 
 LATENT_FEATURES = 64
-BATCH_SIZE = 36
+BATCH_SIZE = 52
 
 # Generator
 class Generator(nn.Module):
@@ -213,15 +213,16 @@ def train_gan(generator, discriminator, dataloader, device, noise_dim, save_name
             # discriminator(fake_data) => 0
 
             loss_D = -torch.mean(discriminator(real_data)) + torch.mean(discriminator(fake_data))
-            gp = gradient_penalty(discriminator, real_data, fake_data, device)
-            loss_D += LAMBDA * gp
+            if LAMBDA != 0:
+                gp = gradient_penalty(discriminator, real_data, fake_data, device)
+                loss_D += LAMBDA * gp
             loss_D.backward()
             optimizer_D.step()
             # scheduler_D.step(loss_D)
 
-            # # Clip weights of discriminator
-            # for p in discriminator.parameters():
-            #     p.data.clamp_(-0.01, 0.01)
+            # Clip weights of discriminator
+            for p in discriminator.parameters():
+                p.data.clamp_(-0.01, 0.01)
 
             # Train Generator every 5 steps
             if i % 5 == 0:
@@ -238,8 +239,10 @@ def train_gan(generator, discriminator, dataloader, device, noise_dim, save_name
             D_losses.append(loss_D.item())
 
             # Update progress bar description with loss values
-            progress_bar.set_postfix(D_loss=loss_D.item(), G_loss=loss_G.item(), gp=gp.item())
-            # progress_bar.set_postfix(D_loss=loss_D.item(), G_loss=loss_G.item())
+            if LAMBDA != 0:
+                progress_bar.set_postfix(D_loss=loss_D.item(), G_loss=loss_G.item(), gp=gp.item())
+            else:
+                progress_bar.set_postfix(D_loss=loss_D.item(), G_loss=loss_G.item())
 
         if epoch % 100 == 0:
             save_model()
@@ -318,7 +321,7 @@ def main():
 
     # Train GANs for each group
     # for group in ['colon_aca', 'colon_n']:
-    for group in ['colon_n']:
+    for group in ['colon_aca']:
         dataloader = get_dataloader(train_data_dir, group, image_size, batch_size)
         train_group_gan(group, dataloader, noise_dim, image_size, epochs, device)
 

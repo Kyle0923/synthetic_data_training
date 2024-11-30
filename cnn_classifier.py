@@ -39,11 +39,8 @@ class CustomDataset(Dataset):
 
         for label, subfolder in enumerate(["colon_aca", "colon_n"]):
             folder_path = os.path.join(root_dir, subfolder)
-            img_files = (
-                os.listdir(folder_path)[:num_images]
-                if num_images
-                else os.listdir(folder_path)
-            )
+            img_files = os.listdir(folder_path)[:num_images]
+
             self.img_paths.extend([os.path.join(folder_path, img) for img in img_files])
             self.labels.extend([label] * len(img_files))
 
@@ -62,7 +59,7 @@ class CustomDataset(Dataset):
 # Define transformations to resize and normalize images
 transform = transforms.Compose(
     [
-        transforms.Resize((224, 224)),  # Reduce size to minimize memory usage
+        # transforms.Resize((224, 224)),  # Reduce size to minimize memory usage
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ]
@@ -85,7 +82,7 @@ def load_data(original_data_path, synthetic_data_path, num_original, num_synthet
 
     test_dataset = CustomDataset(os.path.join(original_data_path, "test"), transform)
     print(
-        f"Number of test images: {len(test_dataset)}"
+        f"Number of test images: {len(test_dataset)}, train images: {len(train_dataset)}"
     )  # Print the number of test images
     test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=4)
 
@@ -96,6 +93,7 @@ def load_data(original_data_path, synthetic_data_path, num_original, num_synthet
 def train(model, train_loader, criterion, optimizer, epoch):
     model.train()
     running_loss = 0.0
+    count = 0
     for inputs, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}", leave=False):
         inputs, labels = inputs.to(device), labels.to(device)
 
@@ -107,6 +105,7 @@ def train(model, train_loader, criterion, optimizer, epoch):
         optimizer.step()
 
         running_loss += loss.item()
+        count += 1
 
     print(f"Epoch {epoch+1} - Loss: {running_loss / len(train_loader)}")
 
@@ -140,8 +139,8 @@ def main():
     synthetic_data_path = "./synthetic_data"
 
     # Specify how many images from each dataset
-    num_original = 2000
-    num_synthetic = 1000
+    num_original = 50
+    num_synthetic = 0
 
     train_loader, test_loader = load_data(
         original_data_path, synthetic_data_path, num_original, num_synthetic

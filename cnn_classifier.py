@@ -1,101 +1,118 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset, Subset
-from torchvision import datasets, transforms
-from tqdm import tqdm
-import os
+import torch.utils.data as data
+from torchvision import datasets, transforms, models
+from torch.utils.data import DataLoader, Dataset
 from PIL import Image
+import os
 import numpy as np
-from sklearn.metrics import f1_score, roc_auc_score
-from torch.utils.data import Dataset
-import glob
+from tqdm import tqdm
+from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
+
+# Set device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-class CustomImageDataset(Dataset):
-    def __init__(self, data_dir, transform=None):
-        self.data_dir = data_dir
-        self.transform = transform
-        self.image_paths = []
-        self.labels = []
-        self._load_data()
-
-    def _load_data(self):
-        for label, subfolder in enumerate(["colon_aca", "colon_n"]):
-            class_path = os.path.join(self.data_dir, subfolder)
-            class_images = glob.glob(os.path.join(class_path, "*.jpg"))
-            for image_path in class_images:
-                self.image_paths.append(image_path)
-                self.labels.append(label)
-
-    def __len__(self):
-        return len(self.image_paths)
-
-    def __getitem__(self, idx):
-        image_path = self.image_paths[idx]
-        label = self.labels[idx]
-        image = Image.open(image_path).convert("RGB")
-        if self.transform:
-            image = self.transform(image)
-        return image, label
-
-
+# Define CNN model with reduced memory usage
 class CNNClassifier(nn.Module):
-    def __init__(self, num_classes=2):
+    def __init__(self):
         super(CNNClassifier, self).__init__()
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
-        self.fc1 = nn.Linear(256 * 96 * 96, 1024)
-        self.fc2 = nn.Linear(1024, num_classes)
-
-        self.pool = nn.MaxPool2d(2, 2)
+        # Using a pre-trained ResNet18 model and fine-tuning it
+        self.resnet = models.resnet18(pretrained=True)
+        self.resnet.fc = nn.Linear(
+            self.resnet.fc.in_features, 2
+        )  # 2 classes: colon_aca and colon_n
 
     def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = self.pool(F.relu(self.conv3(x)))
-        x = x.view(-1, 256 * 96 * 96)  # Flatten the tensor
-        x = F.relu(self.fc1(x))
-        x = self.fc2(x)
-        return x
+        return self.resnet(x)
 
 
-def train_model(train_loader, model, criterion, optimizer, device, num_epochs=5):
-    model.train()
-    for epoch in range(num_epochs):
-        running_loss = 0.0
-        correct = 0
-        total = 0
-        progress_bar = tqdm(train_loader, desc=f"Epoch [{epoch+1}/{num_epochs}]")
+# Custom dataset to load images from folders
+class CustomDataset(Dataset):
+    def __init__(self, root_dir, transform=None, num_images=None):
+        self.root_dir = root_dir
+        self.transform = transform
+        self.num_images = num_images
+        self.img_paths = []
+        self.labels = []
 
-        for inputs, labels in progress_bar:
-            inputs, labels = inputs.to(device), labels.to(device)
-
-            optimizer.zero_grad()
-
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
-
-            running_loss += loss.item()
-
-            _, predicted = torch.max(outputs, 1)
-            total += labels.size(0)
-            correct += (predicted == labels).sum().item()
-
-            progress_bar.set_postfix(
-                loss=running_loss / (total + 1e-5), accuracy=correct / total
+        for label, subfolder in enumerate(["colon_aca", "colon_n"]):
+            folder_path = os.path.join(root_dir, subfolder)
+            img_files = (
+                os.listdir(folder_path)[:num_images]
+                if num_images
+                else os.listdir(folder_path)
             )
+            self.img_paths.extend([os.path.join(folder_path, img) for img in img_files])
+            self.labels.extend([label] * len(img_files))
 
-        print(
-            f"Epoch {epoch+1} - Loss: {running_loss / len(train_loader):.4f}, Accuracy: {correct / total:.4f}"
-        )
+    def __len__(self):
+        return len(self.img_paths)
+
+    def __getitem__(self, idx):
+        img_path = self.img_paths[idx]
+        img = Image.open(img_path).convert("RGB")
+        if self.transform:
+            img = self.transform(img)
+        label = self.labels[idx]
+        return img, label
 
 
-def evaluate_model(test_loader, model, device):
+# Define transformations to resize and normalize images
+transform = transforms.Compose(
+    [
+        transforms.Resize((224, 224)),  # Reduce size to minimize memory usage
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ]
+)
+
+
+# Function to load data
+def load_data(original_data_path, synthetic_data_path, num_original, num_synthetic):
+    train_dataset = torch.utils.data.ConcatDataset(
+        [
+            CustomDataset(
+                os.path.join(original_data_path, "train"), transform, num_original // 2
+            ),
+            CustomDataset(
+                os.path.join(synthetic_data_path), transform, num_synthetic // 2
+            ),
+        ]
+    )
+    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=4)
+
+    test_dataset = CustomDataset(os.path.join(original_data_path, "test"), transform)
+    print(
+        f"Number of test images: {len(test_dataset)}"
+    )  # Print the number of test images
+    test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=4)
+
+    return train_loader, test_loader
+
+
+# Training function
+def train(model, train_loader, criterion, optimizer, epoch):
+    model.train()
+    running_loss = 0.0
+    for inputs, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}", leave=False):
+        inputs, labels = inputs.to(device), labels.to(device)
+
+        optimizer.zero_grad()
+
+        outputs = model(inputs)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+
+        running_loss += loss.item()
+
+    print(f"Epoch {epoch+1} - Loss: {running_loss / len(train_loader)}")
+
+
+# Evaluation function
+def evaluate(model, test_loader):
     model.eval()
     all_preds = []
     all_labels = []
@@ -103,103 +120,42 @@ def evaluate_model(test_loader, model, device):
     with torch.no_grad():
         for inputs, labels in test_loader:
             inputs, labels = inputs.to(device), labels.to(device)
-
             outputs = model(inputs)
-            _, predicted = torch.max(outputs, 1)
-
-            all_preds.extend(predicted.cpu().numpy())
+            _, preds = torch.max(outputs, 1)
+            all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
 
-    accuracy = np.mean(np.array(all_preds) == np.array(all_labels))
+    accuracy = accuracy_score(all_labels, all_preds)
     f1 = f1_score(all_labels, all_preds, average="weighted")
     auc = roc_auc_score(all_labels, all_preds)
 
-    return accuracy, f1, auc
+    print(f"Accuracy: {accuracy:.4f}")
+    print(f"F1-score: {f1:.4f}")
+    print(f"AUC: {auc:.4f}")
 
 
-def get_data_loaders(
-    original_train_dir,
-    synthetic_train_dir,
-    batch_size,
-    image_size,
-    num_original,
-    num_synthetic,
-):
-    transform = transforms.Compose(
-        [
-            transforms.Resize((image_size, image_size)),
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-        ]
-    )
-
-    original_dataset = CustomImageDataset(
-        data_dir=original_train_dir, transform=transform
-    )
-    synthetic_dataset = CustomImageDataset(
-        data_dir=synthetic_train_dir, transform=transform
-    )
-
-    # Use only the specified number of images from each dataset
-    original_subset = Subset(original_dataset, range(num_original))
-    synthetic_subset = Subset(synthetic_dataset, range(num_synthetic))
-
-    # Combine datasets
-    full_train_dataset = original_subset + synthetic_subset
-
-    train_loader = DataLoader(full_train_dataset, batch_size=batch_size, shuffle=True)
-    return train_loader
-
-
+# Main function
 def main():
-    original_train_dir = "./lung_colon_image_set/colon_image_sets/train"
-    synthetic_train_dir = "synthetic_data"
-    test_dir = "./lung_colon_image_set/colon_image_sets/test"
+    original_data_path = "./lung_colon_image_set/colon_image_sets"
+    synthetic_data_path = "./synthetic_data"
 
-    # Hyperparameters
-    image_size = 768
-    batch_size = 32
-    num_epochs = 10
-    num_original = 2000  # Specify how many images from the original dataset
-    num_synthetic = 0  # Specify how many images from the synthetic dataset
+    # Specify how many images from each dataset
+    num_original = 2000
+    num_synthetic = 1000
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    train_loader, test_loader = load_data(
+        original_data_path, synthetic_data_path, num_original, num_synthetic
+    )
 
     model = CNNClassifier().to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-    train_loader = get_data_loaders(
-        original_train_dir,
-        synthetic_train_dir,
-        batch_size,
-        image_size,
-        num_original,
-        num_synthetic,
-    )
+    num_epochs = 10
+    for epoch in range(num_epochs):
+        train(model, train_loader, criterion, optimizer, epoch)
 
-    # Train the model
-    train_model(train_loader, model, criterion, optimizer, device, num_epochs)
-
-    # Evaluate on test set
-    test_dataset = CustomImageDataset(
-        data_dir=test_dir,
-        transform=transforms.Compose(
-            [
-                transforms.Resize((image_size, image_size)),
-                transforms.ToTensor(),
-                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-            ]
-        ),
-    )
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-
-    accuracy, f1, auc = evaluate_model(test_loader, model, device)
-
-    print(f"Test Accuracy: {accuracy:.4f}")
-    print(f"Test F1-Score: {f1:.4f}")
-    print(f"Test AUC: {auc:.4f}")
+    evaluate(model, test_loader)
 
 
 if __name__ == "__main__":

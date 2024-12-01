@@ -15,6 +15,7 @@ import json
 import time
 import sys
 from datetime import timedelta
+import numpy as np
 
 # for signal handling
 import os
@@ -26,7 +27,7 @@ graceful_exit = False
 LAMBDA = 0 # Gradient penalty lambda hyperparameter
 
 LATENT_FEATURES = 64
-BATCH_SIZE = 52
+BATCH_SIZE = 50
 
 # Generator
 class Generator(nn.Module):
@@ -129,7 +130,7 @@ def gradient_penalty(discriminator, real_data, fake_data, device):
 
 
 # DataLoader for a specific group
-def get_dataloader(data_dir, group, image_size, batch_size):
+def get_dataloader(data_dir, group, image_size, batch_size, first_n=-1):
     transform = transforms.Compose([
         transforms.Resize((image_size, image_size)),
         transforms.ToTensor(),
@@ -140,6 +141,8 @@ def get_dataloader(data_dir, group, image_size, batch_size):
     class_idx = dataset.class_to_idx[group]
     indices = [i for i, (_, label) in enumerate(dataset) if label == class_idx]
     subset = Subset(dataset, indices)
+    if first_n > 0:
+        subset = Subset(subset, range(first_n))
 
     return DataLoader(subset, batch_size=batch_size, shuffle=True)
 
@@ -170,7 +173,8 @@ def train_gan(generator, discriminator, dataloader, device, noise_dim, save_name
     # )
 
     start_time = time.time()
-    for epoch in range(1, epochs+1):
+    epoch_pbar = tqdm(range(1, epochs+1), desc="training", position=0)
+    for epoch in epoch_pbar:
         def save_model():
             ep_save_path = f"{save_name}_ep{epoch}.pth"
             print(f"Epoch [{epoch}/{epochs}] Loss D: {D_losses[-1]:.4f}, Loss G: {G_losses[-1]:.4f}")
@@ -188,10 +192,10 @@ def train_gan(generator, discriminator, dataloader, device, noise_dim, save_name
                 json.dump({"date": start_date, "duration": duration, "epoch": epoch,"hyperparam": {"lambda": LAMBDA, "LATENT_FEATURES": LATENT_FEATURES}, "losses": {"G_losses":G_losses, "D_losses": D_losses}}, file)
 
         # Create a progress bar using tqdm
-        progress_bar = tqdm(dataloader, desc=f"Epoch [{epoch}/{epochs}]")
+        progress_bar = tqdm(dataloader, desc=f"Epoch [{epoch}/{epochs}]", position=1, leave=(epoch % 500 == 0))
 
         if test_training:
-            img_gen(generator, noise_dim, device, num_images=3, save_path=f"img_gen_{save_name}_ep{epoch}.png")
+            img_gen(generator, noise_dim, device, num_images=9, save_name=f"img_gen_{save_name}_ep{epoch}", save_as_grid=True)
             test_training = False
 
         for i, (real_data, _) in enumerate(progress_bar):
@@ -241,19 +245,22 @@ def train_gan(generator, discriminator, dataloader, device, noise_dim, save_name
             # Update progress bar description with loss values
             if LAMBDA != 0:
                 progress_bar.set_postfix(D_loss=loss_D.item(), G_loss=loss_G.item(), gp=gp.item())
+                epoch_pbar.set_postfix(D_loss=loss_D.item(), G_loss=loss_G.item(), gp=gp.item())
             else:
                 progress_bar.set_postfix(D_loss=loss_D.item(), G_loss=loss_G.item())
+                epoch_pbar.set_postfix(D_loss=loss_D.item(), G_loss=loss_G.item())
 
-        if epoch % 100 == 0:
+        if epoch % 1000 == 0:
             save_model()
 
+    save_model()
     finish_training()
 
     return
 
 
 # Train GAN for a group
-def train_group_gan(group, dataloader, noise_dim, image_size, epochs, device):
+def train_group_gan(group, dataloader, noise_dim, epochs, device):
     print(f"Training GAN for group: {group}, lambda:{LAMBDA}")
 
     generator = Generator(noise_dim, channels=3).to(device)
@@ -267,7 +274,10 @@ def train_group_gan(group, dataloader, noise_dim, image_size, epochs, device):
 
 
 # Generate images
-def img_gen(generator_path, noise_dim, device, num_images=1, save_path="generated_image.png"):
+def img_gen(generator_path, noise_dim, device, num_images=1, save_path=".", save_name="image", save_as_grid=False):
+    IMG_FORMAT = "jpeg"
+    os.makedirs(save_path, exist_ok=True)
+
     if isinstance(generator_path, str):
         generator = Generator(noise_dim).to(device)
         generator.load_state_dict(torch.load(generator_path))
@@ -275,17 +285,20 @@ def img_gen(generator_path, noise_dim, device, num_images=1, save_path="generate
     else:
         generator = generator_path
 
-    z = torch.randn(num_images**2, noise_dim, 1, 1, device=device)
+    z = torch.randn(num_images, noise_dim, 1, 1, device=device)
     with torch.no_grad():
         fake_images = generator(z)
 
     fake_images = (fake_images + 1) / 2
-    vutils.save_image(fake_images, save_path, nrow=num_images)
-    print(f"Generated images saved to {save_path}.")
-
-    # plt.imshow(fake_images[0].permute(1, 2, 0).cpu().numpy())
-    # plt.axis("off")
-    # plt.show()
+    if save_as_grid:
+        image_path = os.path.join(save_path, f"{save_name}.{IMG_FORMAT}")
+        vutils.save_image(fake_images, save_path, nrow=int(np.sqrt(num_images)), format=IMG_FORMAT)
+        print(f"Generated images saved to {save_path}.")
+    else:
+        for idx, img in enumerate(fake_images):
+            image_path = os.path.join(save_path, f"{save_name}_{idx+1}.{IMG_FORMAT}")
+            vutils.save_image(img, image_path, format=IMG_FORMAT)
+        print(f"Images saved to {save_path}.")
 
 
 def signal_handler_test_onfly(sig, frame):
@@ -303,32 +316,38 @@ def signal_handler_on_exit(sig, frame):
     graceful_exit = True
 
 # Main
-def main():
-    PID = os.getpid()
-    # use sigbus to trigger training on-the-fly
-    signal.signal(signal.SIGBUS, signal_handler_test_onfly)
-    signal.signal(signal.SIGINT, signal_handler_on_exit)
-    signal.signal(signal.SIGTERM, signal_handler_on_exit)
-    print(f"PID: {PID}, use ``kill -s SIGBUS {PID}`` to trigger test")
+def main(train=True, gen=False):
+    if train:
+        PID = os.getpid()
+        # use sigbus to trigger training on-the-fly
+        signal.signal(signal.SIGBUS, signal_handler_test_onfly)
+        signal.signal(signal.SIGINT, signal_handler_on_exit)
+        signal.signal(signal.SIGTERM, signal_handler_on_exit)
+        print(f"PID: {PID}, use ``kill -s SIGBUS {PID}`` to trigger test")
 
-    train_data_dir = './lung_colon_image_set/colon_image_sets/train'
+    train_data_dir = './lung_colon_image_set/first50'
+    first_n = -1
     noise_dim = 100
     image_size = 768
-    batch_size = BATCH_SIZE
-    epochs = 5000
+    epochs = 50000
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # Train GANs for each group
-    # for group in ['colon_aca', 'colon_n']:
-    for group in ['colon_aca']:
-        dataloader = get_dataloader(train_data_dir, group, image_size, batch_size)
-        train_group_gan(group, dataloader, noise_dim, image_size, epochs, device)
+    if train:
+        # Train GANs for each group
+        # for group in ['colon_aca', 'colon_n']:
+        for group in ['colon_n']:
+            dataloader = get_dataloader(train_data_dir, group, image_size, BATCH_SIZE, first_n)
+            train_group_gan(group, dataloader, noise_dim, epochs, device)
 
-    # Generate images for each group
-    # for group in ['colon_aca', 'colon_n']:
-    #     ep=800
-    #     img_gen(f"generator_{group}_4000_ep{ep}.pth", noise_dim, device, num_images=3, save_path=f"img_gen_{group}_{ep}.png")
+    if gen:
+        # Generate images for each group
+        # for group in ['colon_aca', 'colon_n']:
+        for group in ['colon_n']:
+            # group = "colon_aca"
+            ep=2000
+            generator_path = f"generator_{group}_{first_n}_ep{ep}.pth"
+            img_gen(generator_path, noise_dim, device, num_images=50, save_path=f"gen_img/{group}/", save_name=f"gen_{group}")
 
 if __name__ == "__main__":
     # model = Generator(100)

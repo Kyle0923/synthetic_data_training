@@ -29,3 +29,6 @@ __pypackages__/
 # Celery stuff
 lung_colon_image_set/
 archive/
+gen_img/
+discriminator_*.pth
+generator_*.pth

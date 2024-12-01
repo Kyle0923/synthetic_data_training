@@ -192,7 +192,7 @@ def train_gan(generator, discriminator, dataloader, device, noise_dim, save_name
                 json.dump({"date": start_date, "duration": duration, "epoch": epoch,"hyperparam": {"lambda": LAMBDA, "LATENT_FEATURES": LATENT_FEATURES}, "losses": {"G_losses":G_losses, "D_losses": D_losses}}, file)
 
         # Create a progress bar using tqdm
-        progress_bar = tqdm(dataloader, desc=f"Epoch [{epoch}/{epochs}]", position=1, leave=(epoch % 500 == 0))
+        progress_bar = tqdm(dataloader, desc=f"Epoch [{epoch}/{epochs}]", position=1, leave=False)
 
         if test_training:
             img_gen(generator, noise_dim, device, num_images=9, save_name=f"img_gen_{save_name}_ep{epoch}", save_as_grid=True)
@@ -250,7 +250,7 @@ def train_gan(generator, discriminator, dataloader, device, noise_dim, save_name
                 progress_bar.set_postfix(D_loss=loss_D.item(), G_loss=loss_G.item())
                 epoch_pbar.set_postfix(D_loss=loss_D.item(), G_loss=loss_G.item())
 
-        if epoch % 1000 == 0:
+        if epoch % 2500 == 0:
             save_model()
 
     save_model()
@@ -336,18 +336,18 @@ def main(train=True, gen=False):
     if train:
         # Train GANs for each group
         # for group in ['colon_aca', 'colon_n']:
-        for group in ['colon_n']:
+        for group in ['colon_aca']:
             dataloader = get_dataloader(train_data_dir, group, image_size, BATCH_SIZE, first_n)
             train_group_gan(group, dataloader, noise_dim, epochs, device)
 
-    if gen:
-        # Generate images for each group
-        # for group in ['colon_aca', 'colon_n']:
-        for group in ['colon_n']:
-            # group = "colon_aca"
-            ep=2000
-            generator_path = f"generator_{group}_{first_n}_ep{ep}.pth"
-            img_gen(generator_path, noise_dim, device, num_images=50, save_path=f"gen_img/{group}/", save_name=f"gen_{group}")
+    # if gen:
+    #     # Generate images for each group
+    #     # for group in ['colon_aca', 'colon_n']:
+    #     for group in ['colon_aca']:
+    #         # group = "colon_aca"
+    #         ep=2000
+    #         generator_path = f"generator_{group}_{first_n}_ep{ep}.pth"
+    #         img_gen(generator_path, noise_dim, device, num_images=50, save_path=f"gen_img/{group}/", save_name=f"gen_{group}")
 
 if __name__ == "__main__":
     # model = Generator(100)

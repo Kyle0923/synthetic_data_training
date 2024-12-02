@@ -188,7 +188,7 @@ def train_gan(generator, discriminator, dataloader, device, noise_dim, save_name
             elapsed_time = end_time - start_time
             duration = str(timedelta(seconds=elapsed_time))
             start_date = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))
-            with open(f'training_record_{save_name}.json', 'w') as file:
+            with open(f'GAN_training_record_{save_name}.json', 'w') as file:
                 json.dump({"date": start_date, "duration": duration, "epoch": epoch,"hyperparam": {"lambda": LAMBDA, "LATENT_FEATURES": LATENT_FEATURES}, "losses": {"G_losses":G_losses, "D_losses": D_losses}}, file)
 
         # Create a progress bar using tqdm

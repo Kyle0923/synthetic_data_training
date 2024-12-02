@@ -29,3 +29,4 @@ __pypackages__/
 # Celery stuff
 lung_colon_image_set/
 archive/
+models

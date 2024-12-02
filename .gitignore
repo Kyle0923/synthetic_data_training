@@ -29,3 +29,8 @@ __pypackages__/
 # Celery stuff
 lung_colon_image_set/
 archive/
+
+/colon_image_sets_50
+/synthetic_data
+*.txt
+*.png

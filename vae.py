@@ -35,6 +35,8 @@ IMAGE_SIZE = 768
 
 BETA = 1 # KL-Div factor
 
+LOG_PATH = "VAE"
+
 class Encoder(nn.Module):
     def __init__(self, channels=3):
         super(Encoder, self).__init__()
@@ -89,25 +91,16 @@ class Decoder(nn.Module):
             nn.ReLU(True),
             nn.Unflatten(dim=1, unflattened_size=(self.latent_dim, 3, 3)),
             # state size. ``(self.latent_dim) x 3 x 3``
-            nn.ConvTranspose2d(self.latent_dim, self.latent_dim * 16, kernel_size=4, stride=2, padding=1),
+            nn.ConvTranspose2d(self.latent_dim, self.latent_dim * 16, kernel_size=8, stride=4, padding=2),
             nn.ReLU(True),
-            # state size. ``(self.latent_dim*16) x 6 x 6``
-            nn.Upsample(scale_factor=2, mode=upsample_mode),
             # state size. ``(self.latent_dim*16) x 12 x 12``
-            nn.ConvTranspose2d(self.latent_dim * 16, self.latent_dim * 8, kernel_size=4, stride=2, padding=1),
+            nn.ConvTranspose2d(self.latent_dim * 16, self.latent_dim * 8, kernel_size=8, stride=4, padding=2),
             nn.ReLU(True),
-            # state size. ``(self.latent_dim*8) x 24 x 24``
-            nn.Upsample(scale_factor=2, mode=upsample_mode),
             # state size. ``(self.latent_dim*8) x 48 x 48``
-            nn.ConvTranspose2d(self.latent_dim * 8, self.latent_dim * 4, kernel_size=4, stride=2, padding=1),
+            nn.ConvTranspose2d(self.latent_dim * 8, self.latent_dim * 4, kernel_size=8, stride=4, padding=2),
             nn.ReLU(True),
-            # state size. ``(self.latent_dim*4) x 96 x 96``
-            nn.Upsample(scale_factor=2, mode=upsample_mode),
             # state size. ``(self.latent_dim*4) x 192 x 192``
-            nn.ConvTranspose2d(self.latent_dim * 4, self.latent_dim * 2, kernel_size=4, stride=2, padding=1),
-            nn.ReLU(True),
-            # state size. ``(self.latent_dim*4) x 384 x 384``
-            nn.ConvTranspose2d(self.latent_dim * 2, channels, kernel_size=4, stride=2, padding=1),
+            nn.ConvTranspose2d(self.latent_dim * 4, channels, kernel_size=8, stride=4, padding=2),
             # state size. ``(channels) x 768 x 768``
             nn.Tanh()
         )
@@ -186,30 +179,35 @@ def train_vae(dataloader, device, epochs=2000):
     lr = 1e-4
     opt = torch.optim.Adam(vae.parameters(), lr=lr)
 
-    class_labels = list(dataloader.dataset.class_to_idx.keys())
-    gaussians = defaultdict(list)
+    class_labels = dataloader.dataset.class_to_idx
+    gaussians = {}
 
     start_time = time.time()
     for epoch in range(1, epochs+1):
         def save_model():
-            ep_save_path = f"{save_name}_ep{epoch}.pth"
+            ep_save_path = f"{save_name}_ep{epoch}"
             print(f"Epoch [{epoch}/{epochs}] recon_loss: {recon_losses[-1]:.4f}, kl_loss: {kl_losses[-1]:.4f}")
-            torch.save(vae.state_dict(), f"VAE/vae_{ep_save_path}")
-            print(f"VAE is saved as 'vae_{ep_save_path}'.")
+            torch.save(vae.state_dict(), f"{LOG_PATH}/vae_{ep_save_path}.pth")
+            print(f"{LOG_PATH} is saved as 'vae_{ep_save_path}.pth'.")
+            with open(f'{LOG_PATH}/vae_{ep_save_path}_gaussians.json', 'w') as file:
+                json.dump(gaussians, file)
 
         def finish_training():
             end_time = time.time()
             elapsed_time = end_time - start_time
             duration = str(timedelta(seconds=elapsed_time))
             start_date = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))
-            with open(f'VAE/VAE_training_record_{save_name}.json', 'w') as file:
+            with open(f'{LOG_PATH}/VAE_training_record_{save_name}.json', 'w') as file:
                 json.dump({"date": start_date, "duration": duration, "epoch": epoch,"hyperparam": {"LATENT_DIM": LATENT_DIM, "BETA": BETA}, "losses": {"recon_losses":recon_losses, "kl_losses": kl_losses}}, file)
+
+        latent_vec = defaultdict(list)
 
         # Create a progress bar using tqdm
         progress_bar = tqdm(dataloader, desc=f"Epoch [{epoch}/{epochs}]")
 
         if test_training:
-            save_model()
+            for class_name in class_labels:
+                img_gen_group(vae, gaussians, class_name, device, num_images=9, save_name=f"img_gen_vae_{class_name}_ep{epoch-1}", save_as_grid=True)
             test_training = False
 
         for x, y in progress_bar:
@@ -221,9 +219,10 @@ def train_vae(dataloader, device, epochs=2000):
             x = x.to(device)
             recon_x, mu, logvar, z = vae(x)
 
-            for c in class_labels:
-                # TODO: save the gaussian z
-                pass
+            for class_name in class_labels:
+                class_idx = class_labels[class_name]
+                latent_vec[class_name].append(z[y==class_idx].cpu().detach()) # put to CPU to avoid cuda OOM
+            del z
 
             # recon_loss = nn.MSELoss()(recon_x, x)
             recon_loss = ssim_loss(recon_x, x)
@@ -237,6 +236,14 @@ def train_vae(dataloader, device, epochs=2000):
             kl_losses.append(kl_div.item())
 
             progress_bar.set_postfix(recon_loss=recon_loss.item(), kl=kl_div.item())
+
+        # epoch done
+
+        for class_name in latent_vec:
+            latents = torch.cat(latent_vec[class_name], dim=0)
+            mean = latents.mean(dim=0)
+            cov = torch.cov(latents.T)
+            gaussians[class_name] = {"mean": mean.tolist(), "cov": cov.tolist()}
 
         if epoch % 100 == 0:
             save_model()
@@ -263,18 +270,30 @@ def fit_latent_space(vae, train_data_path, group, device):
     return mean, cov
 
 # Generate images
-def img_gen(vae_path, data_dir, groups, device, num_images=1, save_path=".", save_name="gen", save_as_grid=False):
+def img_gen(vae_path, gaussian_path, groups, device, data_dir=None, num_images=1, save_path=".", save_name="gen", save_as_grid=False):
     vae = VariationalAutoencoder(LATENT_DIM).to(device)
     vae.load_state_dict(torch.load(vae_path))
     vae.eval()
-    for group in groups:
-        img_gen_group(vae, data_dir, group, device, num_images, save_path=f"{save_path}/{group}", save_name=f"{save_name}_{group}", save_as_grid=save_as_grid)
 
-def img_gen_group(vae, data_dir, group, device, num_images=1, save_path=".", save_name="gen", save_as_grid=False):
+    gaussians = None
+    if gaussian_path:
+        with open(gaussian_path, 'r') as file:
+            gaussians = json.load(file)
+
+    for group in groups:
+        if not gaussians:
+            # for legacy models without gaussian json
+            mean, cov = fit_latent_space(vae, data_dir, group, device)
+            gaussians = { group: {"mean": mean.tolist(), "cov": cov.tolist()} }
+        img_gen_group(vae, gaussians, group, device, num_images, save_path=f"{save_path}/{group}", save_name=f"{save_name}_{group}", save_as_grid=save_as_grid)
+
+def img_gen_group(vae, gaussians, group, device, num_images=1, save_path=".", save_name="gen", save_as_grid=False):
     IMG_FORMAT = "jpeg"
     os.makedirs(save_path, exist_ok=True)
 
-    mean, cov = fit_latent_space(vae, data_dir, group, device)
+    mean, cov = gaussians[group].values()
+    mean, cov = torch.tensor(mean), torch.tensor(cov)
+
     z = torch.distributions.MultivariateNormal(mean, cov).sample((num_images,))
     z = z.to(device)
 
@@ -310,6 +329,7 @@ def signal_handler_on_exit(sig, frame):
 def main(train=1):
     if train:
         PID = os.getpid()
+        os.makedirs(LOG_PATH, exist_ok=True)
         # use sigbus to trigger training on-the-fly
         signal.signal(signal.SIGBUS, signal_handler_test_onfly)
         signal.signal(signal.SIGINT, signal_handler_on_exit)
@@ -329,15 +349,16 @@ def main(train=1):
 
     if not train:
         # for group in ['colon_aca', 'colon_n']:
-        ep=42
-        # groups = ['colon_aca', 'colon_n']
-        groups = ['colon_aca']
-        img_gen(f"VAE/vae_8000_ep{ep}.pth", train_data_dir, groups, device, num_images=9, save_path=f"gen_img/", save_name="gen", save_as_grid=True)
+        ep=2
+        groups = ['colon_aca', 'colon_n']
+        # groups = ['colon_aca']
+        img_gen(f"{LOG_PATH}/vae_8000_ep{ep}.pth", f"{LOG_PATH}/vae_8000_ep{ep}_gaussians.json", groups, device, num_images=9, save_path=f"gen_img/", save_name="gen", save_as_grid=True)
+        # img_gen(f"{LOG_PATH}/vae_8000_ep{ep}.pth", None, groups, device, data_dir=train_data_dir, num_images=9, save_path=f"gen_img/", save_name="gen", save_as_grid=True)
 
 if __name__ == "__main__":
     # model = Encoder()
     # summary(model, input_size=(1, 3, 768, 768))
-    model = Decoder()
-    summary(model, input_size=(1, LATENT_DIM, 1, 1))
-    exit()
+    # model = Decoder()
+    # summary(model, input_size=(1, LATENT_DIM, 1, 1))
+    # exit()
     main()

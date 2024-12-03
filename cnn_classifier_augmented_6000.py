@@ -71,51 +71,6 @@ class SimpleCNN(nn.Module):
         return x
 
 
-# class SimpleCNN(nn.Module):
-#     def __init__(self):
-#         super(SimpleCNN, self).__init__()
-
-#         # First convolutional layer
-#         self.conv1 = nn.Conv2d(
-#             3, 16, kernel_size=3, stride=1, padding=1
-#         )  # (3, 768, 768) -> (16, 768, 768)
-#         self.pool1 = nn.MaxPool2d(
-#             4, 4
-#         )  # Downsample aggressively (16, 768, 768) -> (16, 192, 192)
-
-#         # Second convolutional layer
-#         self.conv2 = nn.Conv2d(
-#             16, 32, kernel_size=3, stride=1, padding=1
-#         )  # (16, 192, 192) -> (32, 192, 192)
-#         self.pool2 = nn.MaxPool2d(
-#             4, 4
-#         )  # Downsample further (32, 192, 192) -> (32, 48, 48)
-
-#         # Third convolutional layer
-#         self.conv3 = nn.Conv2d(
-#             32, 64, kernel_size=3, stride=1, padding=1
-#         )  # (32, 48, 48) -> (64, 48, 48)
-#         self.pool3 = nn.MaxPool2d(
-#             4, 4
-#         )  # Downsample further (64, 48, 48) -> (64, 12, 12)
-
-#         # Fully connected layers
-#         self.fc1 = nn.Linear(64 * 12 * 12, 128)  # Smaller fully connected layer
-#         self.fc2 = nn.Linear(128, 2)  # Output layer for 2 classes
-
-#     def forward(self, x):
-#         x = self.pool1(torch.relu(self.conv1(x)))
-#         x = self.pool2(torch.relu(self.conv2(x)))
-#         x = self.pool3(torch.relu(self.conv3(x)))
-
-#         # Flatten the tensor for fully connected layers
-#         x = x.view(-1, 64 * 12 * 12)
-
-#         x = torch.relu(self.fc1(x))
-#         x = self.fc2(x)
-#         return x
-
-
 # Custom dataset to load images from folders
 class CustomDataset(Dataset):
     def __init__(self, root_dir, transform=None, num_images=None, seed=None):
@@ -247,9 +202,9 @@ def evaluate(model, test_loader):
     f1 = f1_score(all_labels, all_preds, average="weighted")
     auc = roc_auc_score(all_labels, all_preds)
 
-    print(f"Accuracy: {accuracy:.4f}")
-    print(f"F1-score: {f1:.4f}")
-    print(f"AUC: {auc:.4f}")
+    # print(f"Accuracy: {accuracy:.4f}")
+    # print(f"F1-score: {f1:.4f}")
+    # print(f"AUC: {auc:.4f}")
 
     return accuracy, f1, auc
 
@@ -260,45 +215,47 @@ def main():
     synthetic_data_path = "./synthetic_data"
 
     # Specify how many images from each dataset
-    num_original = 50
+    num_original = 6000
     num_synthetic = 0
+    epochs = 20
 
     test_loader = load_test_data(original_data_path)
 
-    train_loader_real = load_training_data(
+    train_loader_6_0 = load_training_data(
         original_data_path, synthetic_data_path, num_original, num_synthetic
     )
 
-    # num_synthetic = 2000
-    # train_loader_6_2 = load_training_data(
-    #     original_data_path, synthetic_data_path, num_original, num_synthetic
-    # )
+    num_synthetic = 2000
+    train_loader_6_2 = load_training_data(
+        original_data_path, synthetic_data_path, num_original, num_synthetic
+    )
 
-    # num_synthetic = 6000
-    # train_loader_6_6 = load_training_data(
-    #     original_data_path, synthetic_data_path, num_original, num_synthetic
-    # )
+    num_synthetic = 6000
+    train_loader_6_6 = load_training_data(
+        original_data_path, synthetic_data_path, num_original, num_synthetic
+    )
 
-    # num_original = 2000
-    # train_loader_2_6 = load_training_data(
-    #     original_data_path, synthetic_data_path, num_original, num_synthetic
-    # )
+    num_original = 2000
+    train_loader_2_6 = load_training_data(
+        original_data_path, synthetic_data_path, num_original, num_synthetic
+    )
 
     train_loaders = [
-        train_loader_real,
-        # train_loader_6_2,
-        # train_loader_6_6,
-        # train_loader_2_6,
+        train_loader_6_0,
+        train_loader_6_2,
+        train_loader_6_6,
+        train_loader_2_6,
     ]
 
     model_descriptions = [
         "6000 real images, 0 synthetic images",
-        # "6000 real images, 2000 synthetic images",
-        # "6000 real images, 6000 synthetic images",
-        # "2000 real images, 6000 synthetic images",
+        "6000 real images, 2000 synthetic images",
+        "6000 real images, 6000 synthetic images",
+        "2000 real images, 6000 synthetic images",
     ]
 
     for train_loader, title in zip(train_loaders, model_descriptions):
+        print(f"Training model with {title}")
         model = SimpleCNN().to(device)
         criterion = nn.CrossEntropyLoss()
         optimizer = optim.Adam(model.parameters(), lr=0.001)
@@ -306,14 +263,14 @@ def main():
         accuracies = list()
         f1s = list()
         aucs = list()
-        num_epochs = 5
-        for epoch in range(num_epochs):
-            train(model, train_loader_real, criterion, optimizer, epoch)
+        num_epochs = epochs
+        for epoch in range(1, num_epochs + 1):
+            train(model, train_loader, criterion, optimizer, epoch)
             accuracy, f1, auc = evaluate(model, test_loader)
             accuracies.append(accuracy)
             f1s.append(f1)
             aucs.append(auc)
-        print(f"{title}\naccuracy:\n{accuracies}\nF1:\n{f1s}\nacus:\n{aucs}")
+        print(f"With{title}\naccuracy:\n{accuracies}\nF1:\n{f1s}\nacus:\n{aucs}")
 
 
 if __name__ == "__main__":

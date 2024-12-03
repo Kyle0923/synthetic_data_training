@@ -92,6 +92,7 @@ def main():
 
     # Generate images for each group
     for group in ["colon_aca", "colon_n"]:
+        # for group in ["colon_aca"]:
         ep = 3300
         img_gen(
             f"generator_{group}_4000_ep{ep}.pth",

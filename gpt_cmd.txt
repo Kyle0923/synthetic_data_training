@@ -1,38 +1,7 @@
-write a cnn classifier for me
-requirement:
+write a diffusion generative model
+input 3000 images size 768*768
+training image stored in folder: lung_colon_image_set/colon_images_sets/
 
-training original data path:"./lung_colon_image_set/colon_image_sets/train"
-2 folders under the path:  colon_aca, colon_n
-I have another synthetic training data path:"synthetic_data/"
-contains 2 folders as same previous one
-I want to write a cnn to train from data from them, I will specify how many images  from original training
-data, and how many images from synthetic data, for example If I specify 2000 images from original data, then 1000
-colon_aca images and 1000 colon_n should be used to train
+after reasonable train epoch, output 100 generared imaged to synthetic_data/
 
-after training, test on "./lung_colon_image_set/colon_image_sets/test"
-which contains 2 folders colon_aca, colon_n
-calc the Accuracy, F1-score, AUC and print it
-
-the code will be run on linux with python3.9
-
-no sklearn libarary can be import ,
-print loss after each epoch in tqdm
-
-image size is 768x768
-try use as little memory as possibile because this error will hapen:
-Using device: cuda
-Traceback (most recent call last):
-  File "/home/c65jin/680project/cnn_classifier.py", line 220, in <module>
-    main()
-  File "/home/c65jin/680project/cnn_classifier.py", line 183, in main
-    model = CNNClassifier().to(device)
-  File "/usr/local/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1160, in to
-    return self._apply(convert)
-  File "/usr/local/lib/python3.9/site-packages/torch/nn/modules/module.py", line 810, in _apply
-    module._apply(fn)
-  File "/usr/local/lib/python3.9/site-packages/torch/nn/modules/module.py", line 833, in _apply
-    param_applied = fn(param)
-  File "/usr/local/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1158, in convert
-    return t.to(device, dtype if t.is_floating_point() or t.is_complex() else None, non_blocking)
-torch.cuda.OutOfMemoryError: CUDA out of memory. Tried to allocate 9.00 GiB. GPU 0 has a total capacty of 7.78 GiB of which 7.60 GiB is free. Including non-PyTorch memory, this process has 174.00 MiB memory in use. Of the allocated memory 1.42 MiB is allocated by PyTorch, and 20.58 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting max_split_size_mb to avoid fragmentation.  See documentation for Memory Management and PYTORCH_CUDA_ALLOC_CONF
-
+use tdqm and print loss after each epoch

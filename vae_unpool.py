@@ -18,6 +18,7 @@ import sys
 from datetime import timedelta
 import numpy as np
 from collections import defaultdict
+import shutil # for __file__
 
 from pytorch_msssim import ssim
 
@@ -29,13 +30,15 @@ test_training = False
 graceful_exit = False
 
 LATENT_DIM = 32
-BATCH_SIZE = 32
+BATCH_SIZE = 24
 
 IMAGE_SIZE = 768
 
 BETA = 1e-2 # KL-Div factor
 
-LOG_PATH = "VAE_cnn_latent32"
+LOG_PATH = "VAE_latent32_batchNorm"
+
+LEAKY_RELU_SLOPE = 0.01
 
 class Encoder(nn.Module):
     def __init__(self, channels=3):
@@ -74,9 +77,9 @@ class Encoder(nn.Module):
         # mu = self.fc_mu(z)
         # mu = torch.clamp(mu, min=-10, max=10)
         mu = nn.Tanh()(self.fc_mu(z))*10
-        logvar = self.fc_logvar(z)
-        logvar = torch.clamp(logvar, max=np.log(10))
-        # logvar = nn.Tanh()(self.fc_logvar(z)) * np.log(10)
+        # logvar = self.fc_logvar(z)
+        # logvar = torch.clamp(logvar, max=np.log(10))
+        logvar = nn.Tanh()(self.fc_logvar(z)) * np.log(10)
         return mu, logvar
 
 class Decoder(nn.Module):
@@ -91,23 +94,32 @@ class Decoder(nn.Module):
             nn.ReLU(True),
             nn.Unflatten(dim=1, unflattened_size=(self.latent_dim, 3, 3)),
             # state size. ``(self.latent_dim) x 3 x 3``
-            nn.ConvTranspose2d(self.latent_dim, self.latent_dim * 16, kernel_size=8, stride=4, padding=2),
+            nn.ConvTranspose2d(self.latent_dim, self.latent_dim * 16, kernel_size=4, stride=2, padding=1),
             nn.BatchNorm2d(self.latent_dim * 16),
             nn.ReLU(True),
+            # state size. ``(self.latent_dim*16) x 6 x 6``
+            nn.Upsample(scale_factor=2, mode=upsample_mode),
             # state size. ``(self.latent_dim*16) x 12 x 12``
-            nn.ConvTranspose2d(self.latent_dim * 16, self.latent_dim * 8, kernel_size=8, stride=4, padding=2),
+            nn.ConvTranspose2d(self.latent_dim * 16, self.latent_dim * 8, kernel_size=4, stride=2, padding=1),
             nn.BatchNorm2d(self.latent_dim * 8),
             nn.ReLU(True),
+            # state size. ``(self.latent_dim*8) x 24 x 24``
+            nn.Upsample(scale_factor=2, mode=upsample_mode),
             # state size. ``(self.latent_dim*8) x 48 x 48``
-            nn.ConvTranspose2d(self.latent_dim * 8, self.latent_dim * 4, kernel_size=8, stride=4, padding=2),
+            nn.ConvTranspose2d(self.latent_dim * 8, self.latent_dim * 4, kernel_size=4, stride=2, padding=1),
             nn.BatchNorm2d(self.latent_dim * 4),
             nn.ReLU(True),
+            # state size. ``(self.latent_dim*4) x 96 x 96``
+            nn.Upsample(scale_factor=2, mode=upsample_mode),
             # state size. ``(self.latent_dim*4) x 192 x 192``
-            nn.ConvTranspose2d(self.latent_dim * 4, channels, kernel_size=8, stride=4, padding=2),
+            nn.ConvTranspose2d(self.latent_dim * 4, self.latent_dim * 2, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(self.latent_dim * 2),
+            nn.ReLU(True),
+            # state size. ``(self.latent_dim*4) x 384 x 384``
+            nn.ConvTranspose2d(self.latent_dim * 2, channels, kernel_size=4, stride=2, padding=1),
             # state size. ``(channels) x 768 x 768``
             nn.Tanh()
         )
-
     def forward(self, z):
         return self.model(z)
 
@@ -192,7 +204,7 @@ def train_vae(dataloader, device, epochs=2000):
             ep_save_path = f"{save_name}_ep{epoch}"
             print(f"Epoch [{epoch}/{epochs}] recon_loss: {recon_losses[-1]:.4f}, kl_loss: {kl_losses[-1]:.4f}")
             torch.save(vae.state_dict(), f"{LOG_PATH}/vae_{ep_save_path}.pth")
-            print(f"{LOG_PATH} is saved as 'vae_{ep_save_path}.pth'.")
+            print(f"Model is saved as '{LOG_PATH}/vae_{ep_save_path}.pth'.")
             with open(f'{LOG_PATH}/vae_{ep_save_path}_gaussians.json', 'w') as file:
                 json.dump(gaussians, file)
 
@@ -217,6 +229,7 @@ def train_vae(dataloader, device, epochs=2000):
         progress_bar = tqdm(dataloader, desc=f"Epoch [{epoch}/{epochs}]")
 
         if test_training:
+            save_model()
             for class_name in class_labels:
                 img_gen_group(vae, gaussians, class_name, device, num_images=9, save_name=f"img_gen_vae_{class_name}_ep{epoch-1}", save_as_grid=True)
             test_training = False
@@ -341,13 +354,17 @@ def signal_handler_on_exit(sig, frame):
 def main(train=1):
     if train:
         PID = os.getpid()
-        os.makedirs(LOG_PATH, exist_ok=True)
-        print(f"LOG path: {LOG_PATH}")
         # use sigbus to trigger training on-the-fly
         signal.signal(signal.SIGBUS, signal_handler_test_onfly)
         signal.signal(signal.SIGINT, signal_handler_on_exit)
         signal.signal(signal.SIGTERM, signal_handler_on_exit)
         print(f"PID: {PID}, use ``kill -s SIGBUS {PID}`` to trigger test")
+
+        os.makedirs(LOG_PATH, exist_ok=True)
+        print(f"LOG path: {LOG_PATH}")
+        current_script = os.path.abspath(__file__)
+        destination_path = os.path.join(LOG_PATH, os.path.basename(current_script))
+        shutil.copy(current_script, destination_path)
 
     train_data_dir = './lung_colon_image_set/colon_image_sets/train'
     image_size = 768
@@ -370,8 +387,8 @@ def main(train=1):
 
 if __name__ == "__main__":
     # model = Encoder()
-    # summary(model, input_size=(1, 3, 768, 768))
+    # summary(model, input_size=(BATCH_SIZE, 3, 768, 768))
     # model = Decoder()
-    # summary(model, input_size=(1, LATENT_DIM, 1, 1))
+    # summary(model, input_size=(BATCH_SIZE, LATENT_DIM, 1, 1))
     # exit()
     main()

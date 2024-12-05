@@ -32,3 +32,4 @@ archive/
 gen_img/
 discriminator_*.pth
 generator_*.pth
+VAE_*/

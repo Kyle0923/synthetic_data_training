@@ -165,6 +165,9 @@ def train_gan(generator, discriminator, dataloader, device, noise_dim, save_name
     optimizer_G = optim.Adam(generator.parameters(), lr=lr, betas=(0.5, 0.999))
     optimizer_D = optim.Adam(discriminator.parameters(), lr=lr, betas=(0.5, 0.999))
 
+    generator.train()
+    discriminator.train()
+
     # scheduler_G = torch.optim.lr_scheduler.ReduceLROnPlateau(
     #     optimizer_G, mode='min', factor=0.5, patience=5, min_lr=1e-4
     # )
@@ -196,6 +199,8 @@ def train_gan(generator, discriminator, dataloader, device, noise_dim, save_name
 
         if test_training:
             img_gen(generator, noise_dim, device, num_images=9, save_name=f"img_gen_{save_name}_ep{epoch}", save_as_grid=True)
+            generator.train()
+            discriminator.train()
             test_training = False
 
         for i, (real_data, _) in enumerate(progress_bar):
@@ -292,8 +297,8 @@ def img_gen(generator_path, noise_dim, device, num_images=1, save_path=".", save
     fake_images = (fake_images + 1) / 2
     if save_as_grid:
         image_path = os.path.join(save_path, f"{save_name}.{IMG_FORMAT}")
-        vutils.save_image(fake_images, save_path, nrow=int(np.sqrt(num_images)), format=IMG_FORMAT)
-        print(f"Generated images saved to {save_path}.")
+        vutils.save_image(fake_images, image_path, nrow=int(np.sqrt(num_images)), format=IMG_FORMAT)
+        print(f"Generated images saved to {image_path}.")
     else:
         for idx, img in enumerate(fake_images):
             image_path = os.path.join(save_path, f"{save_name}_{idx+1}.{IMG_FORMAT}")
@@ -325,8 +330,8 @@ def main(train=True, gen=False):
         signal.signal(signal.SIGTERM, signal_handler_on_exit)
         print(f"PID: {PID}, use ``kill -s SIGBUS {PID}`` to trigger test")
 
-    train_data_dir = './lung_colon_image_set/first50'
-    first_n = -1
+    train_data_dir = './lung_colon_image_set/colon_image_sets/train'
+    first_n = 8
     noise_dim = 100
     image_size = 768
     epochs = 50000
@@ -336,7 +341,7 @@ def main(train=True, gen=False):
     if train:
         # Train GANs for each group
         # for group in ['colon_aca', 'colon_n']:
-        for group in ['colon_aca']:
+        for group in ['colon_n']:
             dataloader = get_dataloader(train_data_dir, group, image_size, BATCH_SIZE, first_n)
             train_group_gan(group, dataloader, noise_dim, epochs, device)
 
@@ -350,9 +355,9 @@ def main(train=True, gen=False):
     #         img_gen(generator_path, noise_dim, device, num_images=50, save_path=f"gen_img/{group}/", save_name=f"gen_{group}")
 
 if __name__ == "__main__":
-    # model = Generator(100)
-    # summary(model, input_size=(1, 100, 1, 1))
-    # model = Discriminator(3)
-    # summary(model, input_size=(1, 3, 768, 768))
-    # exit()
+    model = Generator(100)
+    summary(model, input_size=(1, 100, 1, 1))
+    model = Discriminator(3)
+    summary(model, input_size=(1, 3, 768, 768))
+    exit()
     main()
